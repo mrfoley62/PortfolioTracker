@@ -562,7 +562,7 @@ if hist_df.empty or hist_df.shape[1] == 0:
 
 # Allocation pie charts
 st.subheader("Portfolio Allocation")
-col1, col2 = st.columns([1, 1.3])
+col1, col2 = st.columns([1, 1.5], gap="large")
 
 # Get sector data for pie charts
 portfolio_data = portfolio[portfolio['ticker'] != 'Total'].copy()
@@ -589,9 +589,10 @@ fig_stock.update_layout(height=320, width=320, margin=dict(l=20, r=20, t=20, b=2
 
 with col1:
     st.write("**Allocation by Sector**")
-    st.plotly_chart(fig_sector, width='stretch')
+    st.plotly_chart(fig_sector, use_container_width=True)
+    st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
     st.write("**Allocation by Stock**")
-    st.plotly_chart(fig_stock, width='stretch')
+    st.plotly_chart(fig_stock, use_container_width=True)
 with col2:
     # Correlation Matrix with heatmap
     st.write("**Correlation Matrix**")
@@ -623,11 +624,10 @@ with col2:
         fig_corr.update_layout(
             xaxis_title="",
             yaxis_title="",
-            width=630,
-            height=630,
-            margin=dict(l=80, r=20, t=40, b=60)
+            height=680,
+            margin=dict(l=60, r=40, t=30, b=50)
         )
-        st.plotly_chart(fig_corr, use_container_width=False)
+        st.plotly_chart(fig_corr, use_container_width=True)
     else:
         st.info("Not enough holdings")
 
