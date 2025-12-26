@@ -46,7 +46,20 @@ def get_yf_beta(ticker):
 # Get EV/EBITDA metric
 def get_ev_ebitda(ticker):
     try:
-        return yf.Ticker(ticker).info.get('enterpriseToEbitda', None)
+        info = yf.Ticker(ticker).info
+        # First try the direct metric
+        ev_ebitda = info.get('enterpriseToEbitda', None)
+        if ev_ebitda is not None:
+            return ev_ebitda
+        # Fall back to manual calculation (useful for MLPs like USAC)
+        market_cap = info.get('marketCap', None)
+        total_debt = info.get('totalDebt', 0)
+        total_cash = info.get('totalCash', 0)
+        ebitda = info.get('ebitda', None)
+        if market_cap is not None and ebitda is not None and ebitda > 0:
+            enterprise_value = market_cap + total_debt - total_cash
+            return enterprise_value / ebitda
+        return None
     except:
         return None
 
