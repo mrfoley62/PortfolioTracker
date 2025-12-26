@@ -10,7 +10,7 @@ from scipy.stats import gaussian_kde
 # Configure page
 st.set_page_config(
     page_title="Portfolio Analysis Dashboard",
-    page_icon="📊",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -150,18 +150,24 @@ def calculate_metrics(portfolio, historical_prices, spy_prices, rf_percent=4.2):
     port_ret = port_ret_full.loc[common_dates]
     spy_ret = spy_ret_full.loc[common_dates]
 
-    # Beta and Alpha
+    # Sharpe Ratio (using configurable rf)
+    rf_annual = rf_percent / 100
+    rf_monthly = rf_annual / 12
+
+    # Beta and Alpha (Jensen's Alpha)
     if len(common_dates) >= 2 and spy_ret.nunique() > 1:
         slope, intercept, _, _, _ = stats.linregress(spy_ret, port_ret)
-        beta = slope
-        alpha = intercept * 12  # Annualized (12 months)
+        raw_beta = slope
+        # Apply Blume adjustment: betas tend to regress toward 1 over time
+        beta = (2/3) * raw_beta + (1/3) * 1.0
+        # Jensen's Alpha: α = Rp – [Rf + (Rm – Rf) × β]
+        rp = port_ret.mean()  # Mean portfolio return (monthly)
+        rm = spy_ret.mean()   # Mean market return (monthly)
+        alpha = (rp - (rf_monthly + (rm - rf_monthly) * beta)) * 12  # Annualized
     else:
         beta = np.nan
         alpha = np.nan
 
-    # Sharpe Ratio (using configurable rf)
-    rf_annual = rf_percent / 100
-    rf_monthly = rf_annual / 12
     port_std = port_ret.std()
     if port_std == 0:
         sharpe = 0.0
@@ -445,16 +451,18 @@ st.markdown("""
 
 portfolio = load_portfolio()
 
-# Settings Section with refined styling
-with st.expander("⚙️ Settings", expanded=False):
-    col1, col2 = st.columns(2)
-    with col1:
-        rf_input = st.slider("Risk-Free Rate (%)", min_value=0.0, max_value=10.0, value=4.2, step=0.1)
-    with col2:
-        beta_source = st.selectbox("Beta Calculation", options=["Custom (3-Year Monthly)", "Yahoo Finance"], index=1)
+# Initialize session state for settings (allows settings at bottom to persist)
+if 'rf_input' not in st.session_state:
+    st.session_state.rf_input = 4.2
+if 'beta_source' not in st.session_state:
+    st.session_state.beta_source = "Yahoo Finance"
 
-# Get historical data for all tickers + SPY
-tickers = portfolio['ticker'].tolist() + ['SPY']
+rf_input = st.session_state.rf_input
+beta_source = st.session_state.beta_source
+
+# Get historical data for all tickers + benchmark indices
+index_tickers = {'S&P 500': 'SPY', 'NASDAQ': 'QQQ', 'Russell 2000': 'IWM', 'Dow Jones': 'DIA'}
+tickers = portfolio['ticker'].tolist() + list(index_tickers.values())
 historical_data = {}
 for ticker in tickers:
     historical_data[ticker] = get_historical_data(ticker)
@@ -647,7 +655,10 @@ with col2:
 # Section divider
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
-metrics = calculate_metrics(portfolio[portfolio['ticker'] != 'Total'], hist_df.drop('SPY', axis=1), hist_df['SPY'], rf_percent=rf_input)
+# Drop all index tickers from portfolio data for metrics calculation
+index_ticker_list = list(index_tickers.values())
+portfolio_cols = [col for col in hist_df.columns if col not in index_ticker_list]
+metrics = calculate_metrics(portfolio[portfolio['ticker'] != 'Total'], hist_df[portfolio_cols], hist_df['SPY'], rf_percent=rf_input)
 
 if metrics is None:
     st.error("Unable to calculate metrics due to missing historical data. Please check your API key and try again.")
@@ -691,12 +702,27 @@ if beta_source == "Yahoo Finance":
 
 st.subheader("Portfolio Performance")
 
+# Index selector for benchmark comparison
+selected_index = st.selectbox("Compare against:", options=list(index_tickers.keys()), index=0)
+selected_index_ticker = index_tickers[selected_index]
+
+# Get benchmark prices and normalize them
+benchmark_prices = hist_df[selected_index_ticker]
+if benchmark_prices.index.tz is not None:
+    benchmark_prices.index = benchmark_prices.index.tz_localize(None)
+earliest_purchase = portfolio[portfolio['ticker'] != 'Total']['purchase_date'].min()
+benchmark_prices = benchmark_prices[benchmark_prices.index >= earliest_purchase]
+if not benchmark_prices.empty:
+    benchmark_prices_norm = benchmark_prices / benchmark_prices.iloc[0] * 100
+else:
+    benchmark_prices_norm = metrics['spy_prices']  # Fallback to SPY
+
 # Performance chart full width
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=metrics['port_prices'].index, y=metrics['port_prices'], mode='lines', name='Portfolio'))
-fig.add_trace(go.Scatter(x=metrics['spy_prices'].index, y=metrics['spy_prices'], mode='lines', name='S&P 500'))
+fig.add_trace(go.Scatter(x=benchmark_prices_norm.index, y=benchmark_prices_norm, mode='lines', name=selected_index))
 fig.update_layout(
-    title="Portfolio vs S&P 500 Performance", 
+    title=f"Portfolio vs {selected_index}", 
     xaxis_title="Date", 
     yaxis_title="Normalized Value (Base 100)",
     xaxis=dict(tickformat='%m/%y', nticks=20),
@@ -887,12 +913,26 @@ if ev_ebitda_data:
 else:
     st.info("EV/EBITDA data not available for any holdings")
 
-# Section divider before refresh button
+# Section divider before settings
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+# Settings Section
+with st.expander("Settings", expanded=False):
+    col1, col2 = st.columns(2)
+    with col1:
+        new_rf = st.slider("Risk-Free Rate (%)", min_value=0.0, max_value=10.0, value=st.session_state.rf_input, step=0.1, key="rf_bottom")
+        if new_rf != st.session_state.rf_input:
+            st.session_state.rf_input = new_rf
+            st.rerun()
+    with col2:
+        new_beta = st.selectbox("Beta Calculation", options=["Custom (3-Year Monthly)", "Yahoo Finance"], index=1 if st.session_state.beta_source == "Yahoo Finance" else 0, key="beta_bottom")
+        if new_beta != st.session_state.beta_source:
+            st.session_state.beta_source = new_beta
+            st.rerun()
 
 # Centered refresh button with professional styling
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
-    if st.button("🔄 Refresh Data", use_container_width=True):
+    if st.button("Refresh Data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
