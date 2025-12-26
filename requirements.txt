@@ -1,5 +1,8 @@
 streamlit
 pandas
-yfinance
+finnhub-python
 plotly
 numpy
+scipy
+requests
+yfinance
