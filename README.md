@@ -1,19 +1,34 @@
-# 🎈 Blank app template
+# Portfolio Tracker Dashboard
 
-A simple Streamlit app template for you to modify!
+A Streamlit dashboard for tracking stock portfolio performance using Yahoo Finance data.
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+## Features
 
-### How to run it on your own machine
+- Tracks portfolio performance vs S&P 500
+- Calculates annualized returns, alpha, beta, and Sharpe ratio
+- Graphs rolling 5-day volatility vs S&P 500
+- Automatically updates data (cached for 5 minutes)
 
-1. Install the requirements
+## Setup
 
+1. Activate the virtual environment and install dependencies:
    ```
-   $ pip install -r requirements.txt
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
    ```
 
-2. Run the app
+2. Update `portfolio.csv` with your stocks:
+   - ticker: Stock symbol
+   - shares: Number of shares
+   - purchase_price: Price per share at purchase
 
+3. Run the app:
    ```
-   $ streamlit run streamlit_app.py
+   streamlit run streamlit_app.py
    ```
+
+## Notes
+
+- Data is cached for 5 minutes to avoid rate limits
+- Click "Refresh Data" to force update
+- Uses Yahoo Finance for free data (no API key required)

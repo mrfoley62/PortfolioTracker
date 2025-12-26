@@ -25,7 +25,9 @@ def get_sector(ticker):
 # Load portfolio
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def load_portfolio():
-    return pd.read_csv('portfolio.csv')
+    df = pd.read_csv('portfolio.csv')
+    df['purchase_date'] = pd.to_datetime(df['purchase_date'])
+    return df
 
 # Get current price
 def get_current_price(ticker):
@@ -56,44 +58,36 @@ def get_historical_data(ticker):
         data = yf.Ticker(ticker).history(period='3y', auto_adjust=True)
         return data['Close']
     except:
-        return pd.Series()
-
-# Calculate portfolio metrics
-def calculate_metrics(portfolio, historical_prices, spy_prices, rf_percent=4.0):
-    if historical_prices.empty or spy_prices.empty:
         return None
-    
-    # Current portfolio value
-    portfolio = portfolio.copy()
-    portfolio['purchase_date'] = pd.to_datetime(portfolio['purchase_date'])
-    portfolio['current_price'] = portfolio['ticker'].apply(get_current_price)
-    # Drop rows where current_price is NaN (failed to fetch)
-    portfolio = portfolio.dropna(subset=['current_price'])
+
+def calculate_metrics(portfolio, historical_prices, spy_prices, rf_percent=4.2):
+    portfolio['current_price'] = pd.to_numeric(portfolio['current_price'], errors='coerce')
     portfolio['current_value'] = portfolio['shares'] * portfolio['current_price']
     portfolio['purchase_value'] = portfolio['shares'] * portfolio['purchase_price']
     total_current = portfolio['current_value'].sum()
     total_purchase = portfolio['purchase_value'].sum()
     total_return = (total_current - total_purchase) / total_purchase if total_purchase != 0 else 0
 
-    # Historical portfolio returns
-    port_returns = []
+    if historical_prices.empty or spy_prices.empty:
+        return None
+
+    # Historical portfolio returns (vectorized)
     dates = historical_prices.index
     if len(dates) == 0:
         return None
-    for date in dates:
-        port_value = 0
-        for _, row in portfolio.iterrows():
-            ticker = row['ticker']
-            if ticker in historical_prices.columns and date in historical_prices[ticker].index:
-                price = historical_prices[ticker].loc[date]
-                if not pd.isna(price):
-                    port_value += row['shares'] * price
-        port_returns.append(port_value)
-    
-    if all(v == 0 for v in port_returns):
-        return None
-    
-    port_prices = pd.Series(port_returns, index=dates)
+
+    # Use only tickers that exist in historical_prices
+    tickers_in_prices = [t for t in portfolio['ticker'] if t in historical_prices.columns]
+    if tickers_in_prices:
+        # Shares indexed by ticker, aligned with historical_prices columns
+        shares_by_ticker = portfolio.set_index('ticker').loc[tickers_in_prices]['shares']
+        price_subset = historical_prices[tickers_in_prices]
+        # Multiply prices by shares for each ticker and sum across tickers per date
+        port_prices = price_subset.mul(shares_by_ticker, axis=1).sum(axis=1)
+    else:
+        # No overlapping tickers; portfolio value is zero across all dates
+        port_prices = pd.Series(0.0, index=dates)
+
     if port_prices.empty or port_prices.isna().all():
         return None
     
@@ -144,17 +138,25 @@ def calculate_metrics(portfolio, historical_prices, spy_prices, rf_percent=4.0):
     spy_ret = spy_ret_full.loc[common_dates]
 
     # Beta and Alpha
-    slope, intercept, _, _, _ = stats.linregress(spy_ret, port_ret)
-    beta = slope
-    alpha = intercept * 12  # Annualized (12 months)
+    if len(common_dates) >= 2 and spy_ret.nunique() > 1:
+        slope, intercept, _, _, _ = stats.linregress(spy_ret, port_ret)
+        beta = slope
+        alpha = intercept * 12  # Annualized (12 months)
+    else:
+        beta = np.nan
+        alpha = np.nan
 
     # Sharpe Ratio (using configurable rf)
     rf_annual = rf_percent / 100
     rf_monthly = rf_annual / 12
-    sharpe = ((port_ret.mean() - rf_monthly) * 12) / (port_ret.std() * np.sqrt(12))
+    port_std = port_ret.std()
+    if port_std == 0:
+        sharpe = 0.0
+    else:
+        sharpe = ((port_ret.mean() - rf_monthly) * 12) / (port_std * np.sqrt(12))
 
     # Annualized return
-    current_date = datetime.now()
+    current_date = pd.Timestamp.now()
     holding_start = portfolio['purchase_date'].min()
     holding_period_days = (current_date - holding_start).days
     ann_return = (1 + total_return) ** (365 / holding_period_days) - 1 if holding_period_days > 0 else 0

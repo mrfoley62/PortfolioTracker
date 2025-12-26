@@ -1,0 +1,19 @@
+[theme]
+primaryColor = "#58a6ff"
+backgroundColor = "#0d1117"
+secondaryBackgroundColor = "#161b22"
+textColor = "#e6edf3"
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = false
+
+[logger]
+level = "error"
+
+[server]
+port = 8501
+headless = true
+maxUploadSize = 200
+
+
