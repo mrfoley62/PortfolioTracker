@@ -11,6 +11,300 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Get live market data for ticker bar
+@st.cache_data(ttl=60)  # Cache for 1 minute
+def get_ticker_bar_data(tickers_list):
+    """Get current price and day change for ticker bar"""
+    ticker_data = {}
+    for ticker in tickers_list:
+        try:
+            stock = yf.Ticker(ticker)
+            hist = stock.history(period='2d')
+            if len(hist) >= 2:
+                current = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2]
+                change = ((current - prev) / prev) * 100
+                ticker_data[ticker] = {'price': current, 'change': change}
+            elif len(hist) == 1:
+                current = hist['Close'].iloc[-1]
+                ticker_data[ticker] = {'price': current, 'change': 0}
+        except:
+            pass
+    return ticker_data
+
+# Load portfolio early for ticker bar
+portfolio_for_ticker = pd.read_csv('portfolio.csv')
+
+# Get top holdings by current value for ticker bar
+def get_top_holdings_for_ticker_bar(portfolio_df, n=8):
+    """Get top n holdings by current value"""
+    holdings = []
+    for _, row in portfolio_df.iterrows():
+        try:
+            price = yf.Ticker(row['ticker']).history(period='1d')['Close'].iloc[-1]
+            value = row['shares'] * price
+            holdings.append({'ticker': row['ticker'], 'value': value})
+        except:
+            pass
+    holdings.sort(key=lambda x: x['value'], reverse=True)
+    return [h['ticker'] for h in holdings[:n]]
+
+# Get tickers for ticker bar (S&P 500 + top holdings)
+top_holdings = get_top_holdings_for_ticker_bar(portfolio_for_ticker)
+ticker_bar_symbols = ['^GSPC'] + top_holdings
+ticker_bar_data = get_ticker_bar_data(ticker_bar_symbols)
+
+# Build ticker bar HTML
+def build_ticker_bar_html(data):
+    items = []
+    display_names = {'^GSPC': 'S&P 500'}
+    for ticker in ticker_bar_symbols:
+        if ticker in data:
+            info = data[ticker]
+            display_name = display_names.get(ticker, ticker)
+            price = f"${info['price']:,.2f}"
+            change = info['change']
+            change_class = 'positive' if change >= 0 else 'negative'
+            change_sign = '+' if change >= 0 else ''
+            items.append(f'<div class="ticker-item"><span class="ticker-symbol">{display_name}</span><span class="ticker-price">{price}</span><span class="ticker-change {change_class}">{change_sign}{change:.2f}%</span></div>')
+    return ''.join(items)
+
+ticker_bar_html = build_ticker_bar_html(ticker_bar_data)
+
+# CSS for hiding default Streamlit elements
+st.markdown("""
+<style>
+    /* Hide default Streamlit header and sidebar */
+    header[data-testid="stHeader"] {
+        display: none;
+    }
+    
+    [data-testid="stSidebar"] {
+        display: none;
+    }
+    
+    [data-testid="stSidebarCollapsedControl"] {
+        display: none;
+    }
+    
+    /* Add padding to main content to account for fixed header + ticker bar */
+    .main .block-container {
+        padding-top: 110px !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Header with interactive ticker bar using components.html
+import streamlit.components.v1 as components
+
+header_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+    * {{
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+    }}
+    
+    body {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    }}
+    
+    /* Navigation bar matching theme */
+    .nav-header {{
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 999999;
+        background: linear-gradient(180deg, #0f1419 0%, #131820 100%);
+        border-bottom: 1px solid rgba(48, 128, 255, 0.15);
+        padding: 0;
+        margin: 0;
+    }}
+    
+    .nav-container {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        max-width: 100%;
+        padding: 0 24px;
+        height: 54px;
+    }}
+    
+    .nav-logo {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }}
+    
+    .nav-logo-text {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 20px;
+        font-weight: 700;
+        color: #f0f6fc;
+        letter-spacing: -0.5px;
+        text-decoration: none;
+    }}
+    
+    .nav-logo-accent {{
+        color: #3080ff;
+    }}
+    
+    .nav-links {{
+        display: flex;
+        align-items: center;
+        gap: 0;
+    }}
+    
+    .nav-link {{
+        color: #8b949e;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 13px;
+        font-weight: 500;
+        text-decoration: none;
+        padding: 18px 20px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        transition: all 0.2s ease;
+        border-bottom: 2px solid transparent;
+    }}
+    
+    .nav-link:hover {{
+        color: #f0f6fc;
+        background-color: rgba(48, 128, 255, 0.08);
+        border-bottom: 2px solid rgba(48, 128, 255, 0.5);
+    }}
+    
+    .nav-link.active {{
+        color: #f0f6fc;
+        border-bottom: 2px solid #3080ff;
+    }}
+    
+    /* Ticker bar below nav */
+    .ticker-bar {{
+        position: fixed;
+        top: 54px;
+        left: 0;
+        right: 0;
+        z-index: 999998;
+        background: rgba(15, 20, 25, 0.95);
+        border-bottom: 1px solid rgba(48, 128, 255, 0.1);
+        padding: 10px 0;
+        display: flex;
+        align-items: center;
+        backdrop-filter: blur(8px);
+    }}
+    
+    .ticker-arrow {{
+        background: none;
+        border: none;
+        color: #8b949e;
+        font-size: 18px;
+        padding: 8px 16px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        flex-shrink: 0;
+    }}
+    
+    .ticker-arrow:hover {{
+        color: #3080ff;
+    }}
+    
+    .ticker-content {{
+        display: flex;
+        align-items: center;
+        gap: 32px;
+        overflow-x: auto;
+        scroll-behavior: smooth;
+        flex: 1;
+        padding: 0 8px;
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }}
+    
+    .ticker-content::-webkit-scrollbar {{
+        display: none;
+    }}
+    
+    .ticker-item {{
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+    }}
+    
+    .ticker-symbol {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }}
+    
+    .ticker-price {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        color: #f0f6fc;
+    }}
+    
+    .ticker-change {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 2px 6px;
+        border-radius: 4px;
+    }}
+    
+    .ticker-change.positive {{
+        color: #3fb950;
+        background: rgba(63, 185, 80, 0.15);
+    }}
+    
+    .ticker-change.negative {{
+        color: #f85149;
+        background: rgba(248, 81, 73, 0.15);
+    }}
+</style>
+</head>
+<body>
+<div class="nav-header">
+    <div class="nav-container">
+        <div class="nav-logo">
+            <span class="nav-logo-text">Portfolio<span class="nav-logo-accent">Tracker</span></span>
+        </div>
+        <div class="nav-links">
+            <a href="/" target="_top" class="nav-link">Dashboard</a>
+            <a href="/Earnings_%26_News" target="_top" class="nav-link active">Earnings & News</a>
+        </div>
+    </div>
+</div>
+
+<div class="ticker-bar">
+    <button class="ticker-arrow" id="leftArrow">&#9664;</button>
+    <div class="ticker-content" id="tickerContent">
+        {ticker_bar_html}
+    </div>
+    <button class="ticker-arrow" id="rightArrow">&#9654;</button>
+</div>
+
+<script>
+    document.getElementById('leftArrow').addEventListener('click', function() {{
+        document.getElementById('tickerContent').scrollLeft -= 200;
+    }});
+    document.getElementById('rightArrow').addEventListener('click', function() {{
+        document.getElementById('tickerContent').scrollLeft += 200;
+    }});
+</script>
+</body>
+</html>
+"""
+components.html(header_html, height=100)
+
 # Custom CSS matching main app style
 st.markdown("""
 <style>
@@ -24,6 +318,7 @@ st.markdown("""
         background: rgba(15, 20, 25, 0.95);
         border-radius: 12px;
         padding: 3.5rem;
+        padding-top: 120px !important;
         box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
         margin: 1.5rem 1rem;
         border: 1px solid rgba(48, 128, 255, 0.12);

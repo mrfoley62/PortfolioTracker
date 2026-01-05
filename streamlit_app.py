@@ -217,8 +217,299 @@ def calculate_metrics(portfolio, historical_prices, spy_prices, rf_percent=4.2):
         'port_returns': port_ret  # Monthly returns for VaR visualization
     }
 
-# Main app
-st.title("Portfolio Analysis Dashboard")
+# Get live market data for ticker bar
+@st.cache_data(ttl=60)  # Cache for 1 minute
+def get_ticker_bar_data(tickers_list):
+    """Get current price and day change for ticker bar"""
+    ticker_data = {}
+    for ticker in tickers_list:
+        try:
+            stock = yf.Ticker(ticker)
+            hist = stock.history(period='2d')
+            if len(hist) >= 2:
+                current = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2]
+                change = ((current - prev) / prev) * 100
+                ticker_data[ticker] = {'price': current, 'change': change}
+            elif len(hist) == 1:
+                current = hist['Close'].iloc[-1]
+                ticker_data[ticker] = {'price': current, 'change': 0}
+        except:
+            pass
+    return ticker_data
+
+# Load portfolio early for ticker bar
+portfolio_for_ticker = pd.read_csv('portfolio.csv')
+
+# Get top holdings by current value for ticker bar
+def get_top_holdings_for_ticker_bar(portfolio_df, n=8):
+    """Get top n holdings by current value"""
+    holdings = []
+    for _, row in portfolio_df.iterrows():
+        try:
+            price = yf.Ticker(row['ticker']).history(period='1d')['Close'].iloc[-1]
+            value = row['shares'] * price
+            holdings.append({'ticker': row['ticker'], 'value': value})
+        except:
+            pass
+    holdings.sort(key=lambda x: x['value'], reverse=True)
+    return [h['ticker'] for h in holdings[:n]]
+
+# Get tickers for ticker bar (S&P 500 + top holdings)
+top_holdings = get_top_holdings_for_ticker_bar(portfolio_for_ticker)
+ticker_bar_symbols = ['^GSPC'] + top_holdings
+ticker_bar_data = get_ticker_bar_data(ticker_bar_symbols)
+
+# Build ticker bar HTML
+def build_ticker_bar_html(data):
+    items = []
+    display_names = {'^GSPC': 'S&P 500'}
+    for ticker in ticker_bar_symbols:
+        if ticker in data:
+            info = data[ticker]
+            display_name = display_names.get(ticker, ticker)
+            price = f"${info['price']:,.2f}"
+            change = info['change']
+            change_class = 'positive' if change >= 0 else 'negative'
+            change_sign = '+' if change >= 0 else ''
+            items.append(f'<div class="ticker-item"><span class="ticker-symbol">{display_name}</span><span class="ticker-price">{price}</span><span class="ticker-change {change_class}">{change_sign}{change:.2f}%</span></div>')
+    return ''.join(items)
+
+ticker_bar_html = build_ticker_bar_html(ticker_bar_data)
+
+# CSS for hiding default Streamlit elements
+st.markdown("""
+<style>
+    /* Hide default Streamlit header and sidebar */
+    header[data-testid="stHeader"] {
+        display: none;
+    }
+    
+    [data-testid="stSidebar"] {
+        display: none;
+    }
+    
+    [data-testid="stSidebarCollapsedControl"] {
+        display: none;
+    }
+    
+    /* Add padding to main content to account for fixed header + ticker bar */
+    .main .block-container {
+        padding-top: 110px !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Main app - Professional header with interactive ticker bar using components.html
+import streamlit.components.v1 as components
+
+header_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+    * {{
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+    }}
+    
+    body {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    }}
+    
+    /* Navigation bar matching theme */
+    .nav-header {{
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 999999;
+        background: linear-gradient(180deg, #0f1419 0%, #131820 100%);
+        border-bottom: 1px solid rgba(48, 128, 255, 0.15);
+        padding: 0;
+        margin: 0;
+    }}
+    
+    .nav-container {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        max-width: 100%;
+        padding: 0 24px;
+        height: 54px;
+    }}
+    
+    .nav-logo {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }}
+    
+    .nav-logo-text {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 20px;
+        font-weight: 700;
+        color: #f0f6fc;
+        letter-spacing: -0.5px;
+        text-decoration: none;
+    }}
+    
+    .nav-logo-accent {{
+        color: #3080ff;
+    }}
+    
+    .nav-links {{
+        display: flex;
+        align-items: center;
+        gap: 0;
+    }}
+    
+    .nav-link {{
+        color: #8b949e;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 13px;
+        font-weight: 500;
+        text-decoration: none;
+        padding: 18px 20px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        transition: all 0.2s ease;
+        border-bottom: 2px solid transparent;
+    }}
+    
+    .nav-link:hover {{
+        color: #f0f6fc;
+        background-color: rgba(48, 128, 255, 0.08);
+        border-bottom: 2px solid rgba(48, 128, 255, 0.5);
+    }}
+    
+    .nav-link.active {{
+        color: #f0f6fc;
+        border-bottom: 2px solid #3080ff;
+    }}
+    
+    /* Ticker bar below nav */
+    .ticker-bar {{
+        position: fixed;
+        top: 54px;
+        left: 0;
+        right: 0;
+        z-index: 999998;
+        background: rgba(15, 20, 25, 0.95);
+        border-bottom: 1px solid rgba(48, 128, 255, 0.1);
+        padding: 10px 0;
+        display: flex;
+        align-items: center;
+        backdrop-filter: blur(8px);
+    }}
+    
+    .ticker-arrow {{
+        background: none;
+        border: none;
+        color: #8b949e;
+        font-size: 18px;
+        padding: 8px 16px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        flex-shrink: 0;
+    }}
+    
+    .ticker-arrow:hover {{
+        color: #3080ff;
+    }}
+    
+    .ticker-content {{
+        display: flex;
+        align-items: center;
+        gap: 32px;
+        overflow-x: auto;
+        scroll-behavior: smooth;
+        flex: 1;
+        padding: 0 8px;
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }}
+    
+    .ticker-content::-webkit-scrollbar {{
+        display: none;
+    }}
+    
+    .ticker-item {{
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+    }}
+    
+    .ticker-symbol {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }}
+    
+    .ticker-price {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        color: #f0f6fc;
+    }}
+    
+    .ticker-change {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 2px 6px;
+        border-radius: 4px;
+    }}
+    
+    .ticker-change.positive {{
+        color: #3fb950;
+        background: rgba(63, 185, 80, 0.15);
+    }}
+    
+    .ticker-change.negative {{
+        color: #f85149;
+        background: rgba(248, 81, 73, 0.15);
+    }}
+</style>
+</head>
+<body>
+<div class="nav-header">
+    <div class="nav-container">
+        <div class="nav-logo">
+            <span class="nav-logo-text">Portfolio<span class="nav-logo-accent">Tracker</span></span>
+        </div>
+        <div class="nav-links">
+            <a href="/" target="_top" class="nav-link active">Dashboard</a>
+            <a href="/Earnings_%26_News" target="_top" class="nav-link">Earnings & News</a>
+        </div>
+    </div>
+</div>
+
+<div class="ticker-bar">
+    <button class="ticker-arrow" id="leftArrow">&#9664;</button>
+    <div class="ticker-content" id="tickerContent">
+        {ticker_bar_html}
+    </div>
+    <button class="ticker-arrow" id="rightArrow">&#9654;</button>
+</div>
+
+<script>
+    document.getElementById('leftArrow').addEventListener('click', function() {{
+        document.getElementById('tickerContent').scrollLeft -= 200;
+    }});
+    document.getElementById('rightArrow').addEventListener('click', function() {{
+        document.getElementById('tickerContent').scrollLeft += 200;
+    }});
+</script>
+</body>
+</html>
+"""
+components.html(header_html, height=100)
 
 # Custom CSS inspired by professional analytics platforms like Kpler
 st.markdown("""
@@ -241,6 +532,7 @@ st.markdown("""
         background: rgba(15, 20, 25, 0.95);
         border-radius: 12px;
         padding: 3.5rem;
+        padding-top: 120px !important;
         box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.03);
         margin: 1.5rem 1rem;
         width: 100%;
@@ -489,13 +781,30 @@ def get_ltm_return(row):
 
 portfolio['ltm_return'] = portfolio.apply(get_ltm_return, axis=1)
 
+# Calculate daily return for each stock using already-fetched historical data
+def get_daily_return(row):
+    ticker = row['ticker']
+    hist = historical_data.get(ticker, pd.Series())
+    if hist.empty or len(hist) < 2:
+        return None
+    try:
+        current = hist.iloc[-1]
+        prev = hist.iloc[-2]
+        if pd.isna(current) or pd.isna(prev) or prev == 0:
+            return None
+        return ((current - prev) / prev * 100).round(2)
+    except:
+        return None
+
+portfolio['daily_return'] = portfolio.apply(get_daily_return, axis=1)
+
 # Add total row
 total_shares = portfolio['shares'].sum()
 total_purchase_value = (portfolio['shares'] * portfolio['purchase_price']).sum()
 total_current_value = (portfolio['shares'] * portfolio['current_price']).sum()
 total_cumulative_return = ((total_current_value - total_purchase_value) / total_purchase_value * 100).round(2) if total_purchase_value > 0 else 0
 
-# Calculate weighted average LTM return
+# Calculate weighted average LTM return and daily return
 portfolio_no_total = portfolio[portfolio['ticker'] != 'Total']
 if total_current_value > 0:
     weights = (portfolio_no_total['shares'] * portfolio_no_total['current_price']) / total_current_value
@@ -504,8 +813,15 @@ if total_current_value > 0:
         weighted_ltm = (weights[valid_ltm] * portfolio_no_total.loc[valid_ltm, 'ltm_return']).sum()
     else:
         weighted_ltm = None
+    # Calculate weighted average daily return
+    valid_daily = portfolio_no_total['daily_return'].notna()
+    if valid_daily.any():
+        weighted_daily = (weights[valid_daily] * portfolio_no_total.loc[valid_daily, 'daily_return']).sum()
+    else:
+        weighted_daily = None
 else:
     weighted_ltm = None
+    weighted_daily = None
 
 total_row = {
     'ticker': 'Total',
@@ -515,6 +831,7 @@ total_row = {
     'current_price': None,
     'cumulative_return': total_cumulative_return,
     'ltm_return': weighted_ltm.round(2) if weighted_ltm is not None else None,
+    'daily_return': weighted_daily.round(2) if weighted_daily is not None else None,
     'weight': 100.00,
     'current_value': None,
     'historical_value': None
@@ -560,12 +877,147 @@ display_portfolio['current_value'] = display_portfolio['current_value'].apply(la
 display_portfolio['historical_value'] = display_portfolio['historical_value'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else '')
 display_portfolio['cumulative_return'] = display_portfolio['cumulative_return'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else '')
 display_portfolio['ltm_return'] = display_portfolio['ltm_return'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else '')
+display_portfolio['daily_return'] = display_portfolio['daily_return'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else '')
 
 # Reorder columns
-display_portfolio = display_portfolio[['ticker', 'shares', 'purchase_date', 'purchase_price', 'historical_value', 'current_price', 'current_value', 'weight', 'cumulative_return', 'ltm_return']]
+display_portfolio = display_portfolio[['ticker', 'shares', 'purchase_date', 'purchase_price', 'historical_value', 'current_price', 'current_value', 'weight', 'cumulative_return', 'ltm_return', 'daily_return']]
+
+# Separate the Total row from sortable data
+display_portfolio_data = display_portfolio[display_portfolio['ticker'] != 'Total']
+display_portfolio_total = display_portfolio[display_portfolio['ticker'] == 'Total']
 
 st.subheader("Portfolio")
-st.dataframe(display_portfolio)
+
+# Build custom HTML table with sortable headers and fixed Total row
+column_headers = {
+    'ticker': 'Ticker',
+    'shares': 'Shares', 
+    'purchase_date': 'Purchase Date',
+    'purchase_price': 'Purchase Price',
+    'historical_value': 'Historical Value',
+    'current_price': 'Current Price',
+    'current_value': 'Current Value',
+    'weight': 'Weight',
+    'cumulative_return': 'Cumulative Return',
+    'ltm_return': 'LTM Return',
+    'daily_return': 'Daily Return'
+}
+
+# Generate table HTML
+def generate_sortable_table(data_df, total_df, columns, headers):
+    # Build header row
+    header_cells = ''.join([f'<th onclick="sortTable({i})" style="cursor:pointer;">{headers[col]} <span class="sort-icon">⇅</span></th>' for i, col in enumerate(columns)])
+    
+    # Build data rows
+    data_rows = ''
+    for _, row in data_df.iterrows():
+        cells = ''.join([f'<td>{row[col]}</td>' for col in columns])
+        data_rows += f'<tr>{cells}</tr>'
+    
+    # Build total row
+    total_cells = ''
+    for col in columns:
+        val = total_df[col].values[0] if len(total_df) > 0 else ''
+        total_cells += f'<td>{val}</td>'
+    total_row = f'<tr class="total-row">{total_cells}</tr>'
+    
+    return f'''
+    <style>
+        .portfolio-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            font-size: 14px;
+        }}
+        .portfolio-table th {{
+            background: rgba(48, 128, 255, 0.08);
+            color: #f0f6fc;
+            font-weight: 600;
+            padding: 12px 10px;
+            text-align: left;
+            border-bottom: 2px solid rgba(48, 128, 255, 0.15);
+            white-space: nowrap;
+        }}
+        .portfolio-table th:hover {{
+            background: rgba(48, 128, 255, 0.15);
+        }}
+        .sort-icon {{
+            opacity: 0.5;
+            font-size: 12px;
+            margin-left: 4px;
+        }}
+        .portfolio-table td {{
+            padding: 10px;
+            border-bottom: 1px solid rgba(48, 128, 255, 0.06);
+            color: #d0d7de;
+        }}
+        .portfolio-table tbody tr:hover {{
+            background-color: rgba(48, 128, 255, 0.08);
+        }}
+        .portfolio-table .total-row {{
+            background: rgba(48, 128, 255, 0.12);
+            font-weight: 700;
+        }}
+        .portfolio-table .total-row td {{
+            border-top: 2px solid rgba(48, 128, 255, 0.3);
+            color: #f0f6fc;
+        }}
+        .portfolio-table .total-row:hover {{
+            background: rgba(48, 128, 255, 0.12);
+        }}
+    </style>
+    <table class="portfolio-table">
+        <thead>
+            <tr>{header_cells}</tr>
+        </thead>
+        <tbody id="tableBody">
+            {data_rows}
+        </tbody>
+        <tfoot>
+            {total_row}
+        </tfoot>
+    </table>
+    <script>
+        let sortDirections = {{}};
+        function sortTable(columnIndex) {{
+            const table = document.querySelector('.portfolio-table');
+            const tbody = document.getElementById('tableBody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            // Toggle sort direction
+            sortDirections[columnIndex] = !sortDirections[columnIndex];
+            const ascending = sortDirections[columnIndex];
+            
+            rows.sort((a, b) => {{
+                let aVal = a.cells[columnIndex].textContent.trim();
+                let bVal = b.cells[columnIndex].textContent.trim();
+                
+                // Remove $ and % for numeric comparison
+                const aNum = parseFloat(aVal.replace(/[$,%]/g, ''));
+                const bNum = parseFloat(bVal.replace(/[$,%]/g, ''));
+                
+                if (!isNaN(aNum) && !isNaN(bNum)) {{
+                    return ascending ? aNum - bNum : bNum - aNum;
+                }}
+                
+                // String comparison
+                return ascending ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+            }});
+            
+            // Reorder rows
+            rows.forEach(row => tbody.appendChild(row));
+        }}
+        
+        // Default sort by Current Value (column 6) descending on page load
+        document.addEventListener('DOMContentLoaded', function() {{
+            sortDirections[6] = true;  // Set to true so toggle makes it false (descending)
+            sortTable(6);
+        }});
+    </script>
+    '''
+
+table_html = generate_sortable_table(display_portfolio_data, display_portfolio_total, list(column_headers.keys()), column_headers)
+components.html(table_html, height=450, scrolling=True)
 
 # Section divider
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
