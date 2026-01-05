@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import requests
 from datetime import datetime, timedelta
 
 # Configure page
@@ -277,10 +278,6 @@ header_html = f"""
         <div class="nav-logo">
             <span class="nav-logo-text">Portfolio<span class="nav-logo-accent">Tracker</span></span>
         </div>
-        <div class="nav-links">
-            <a href="/" target="_top" class="nav-link">Dashboard</a>
-            <a href="/Earnings_%26_News" target="_top" class="nav-link active">Earnings & News</a>
-        </div>
     </div>
 </div>
 
@@ -304,6 +301,20 @@ header_html = f"""
 </html>
 """
 components.html(header_html, height=100)
+
+# Navigation buttons (3 across: Dashboard, Peer Comparison, Earnings & News)
+col1, col2, col3 = st.columns([1, 3, 1])
+with col2:
+    n1, n2, n3 = st.columns(3)
+    with n1:
+        if st.button("Dashboard", use_container_width=True):
+            st.switch_page("streamlit_app.py")
+    with n2:
+        if st.button("Peer Comparison", use_container_width=True):
+            st.switch_page("pages/Relative_Valuation.py")
+    with n3:
+        # current page
+        st.button("Earnings & News", use_container_width=True, disabled=True)
 
 # Custom CSS matching main app style
 st.markdown("""
@@ -348,6 +359,31 @@ st.markdown("""
         padding-bottom: 1rem;
         margin-top: 2rem;
         margin-bottom: 1.5rem;
+    }
+
+    /* Button styling - unified with Dashboard */
+    .stButton > button {
+        background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+        color: #e5e7eb;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 10px;
+        font-weight: 700;
+        padding: 1rem 2.4rem;
+        transition: all 0.25s ease;
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+        letter-spacing: 0.2px;
+        font-size: 0.95rem;
+        width: 100%;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+        background: linear-gradient(135deg, #233044 0%, #192030 100%);
+    }
+    
+    .stButton > button:active {
+        transform: translateY(0px);
     }
     
     .news-card {
@@ -410,45 +446,168 @@ def load_portfolio():
     df['purchase_date'] = pd.to_datetime(df['purchase_date'])
     return df
 
-# Get earnings dates
+# Get earnings events with EPS context
 @st.cache_data(ttl=3600)  # Cache for 1 hour
-def get_earnings_data(ticker):
+def get_earnings_events(ticker):
+    """Return list of earnings entries with date/eps info for a ticker."""
+    entries = []
     try:
         stock = yf.Ticker(ticker)
-        calendar = stock.calendar
-        
-        if calendar is None or calendar.empty:
-            return None
-            
-        # Handle different calendar formats
-        if isinstance(calendar, pd.DataFrame):
-            if 'Earnings Date' in calendar.columns:
-                earnings_date = calendar['Earnings Date'].iloc[0]
-            elif 'Earnings Date' in calendar.index:
-                earnings_date = calendar.loc['Earnings Date'].iloc[0]
-            else:
-                return None
-        else:
-            return None
-            
-        return {
-            'ticker': ticker,
-            'earnings_date': earnings_date
-        }
-    except Exception as e:
-        return None
 
-# Get news for ticker
+        # Preferred: get_earnings_dates DataFrame (may be unavailable for some tickers)
+        ed = stock.get_earnings_dates(limit=8)
+        if isinstance(ed, pd.DataFrame) and not ed.empty:
+            for idx, row in ed.iterrows():
+                event_date = pd.to_datetime(idx)
+                eps_est = row.get('EPS Estimate') if 'EPS Estimate' in row else row.get('epsestimate')
+                eps_act = row.get('Reported EPS') if 'Reported EPS' in row else row.get('epsactual')
+                # Surprise can be percent or difference depending on provider
+                surprise = row.get('Surprise(%)') if 'Surprise(%)' in row else row.get('surprisepercent')
+                entries.append({
+                    'ticker': ticker,
+                    'earnings_date': event_date,
+                    'eps_estimate': eps_est,
+                    'eps_actual': eps_act,
+                    'surprise_percent': surprise
+                })
+
+        # Fallback: calendar (often only next event, sometimes only estimates)
+        calendar = stock.calendar
+        cal_date = None
+        eps_avg = None
+        if isinstance(calendar, pd.DataFrame) and not calendar.empty:
+            if 'Earnings Date' in calendar.columns:
+                cal_date = calendar['Earnings Date'].iloc[0]
+            elif 'Earnings Date' in calendar.index:
+                cal_date = calendar.loc['Earnings Date'].iloc[0]
+            eps_avg = calendar['Earnings Average'].iloc[0] if 'Earnings Average' in calendar else None
+        elif isinstance(calendar, dict):
+            ed_val = calendar.get('Earnings Date')
+            if isinstance(ed_val, list) and ed_val:
+                cal_date = ed_val[0]
+            elif ed_val:
+                cal_date = ed_val
+            eps_avg = calendar.get('Earnings Average')
+
+        if cal_date is not None:
+            try:
+                cal_date = pd.to_datetime(cal_date)
+            except Exception:
+                cal_date = None
+        if cal_date is not None:
+            # Only add if not already present for this date
+            if not any(abs((e['earnings_date'] - cal_date).days) < 1 for e in entries):
+                entries.append({
+                    'ticker': ticker,
+                    'earnings_date': cal_date,
+                    'eps_estimate': eps_avg,
+                    'eps_actual': None,
+                    'surprise_percent': None
+                })
+
+    except Exception:
+        pass
+
+    return entries
+
+# Get news for ticker (Yahoo + Finnhub merged, deduped, latest 15)
 @st.cache_data(ttl=1800)  # Cache for 30 minutes
 def get_news(ticker):
+    items_combined = []
+
+    # Source 1: Yahoo Finance
     try:
         stock = yf.Ticker(ticker)
-        news = stock.news
-        if news:
-            return news[:5]  # Return top 5 news items
-        return []
-    except:
-        return []
+        news_raw = stock.news or []
+        for item in news_raw[:20]:
+            content = item.get('content', {}) if isinstance(item, dict) else {}
+            title = content.get('title') or item.get('title')
+            link = (content.get('canonicalUrl', {}) or {}).get('url')
+            if not link:
+                link = (content.get('clickThroughUrl', {}) or {}).get('url')
+            if not link:
+                link = item.get('link')
+            publisher = (content.get('provider', {}) or {}).get('displayName') or item.get('publisher')
+            pub_date = content.get('pubDate') or item.get('providerPublishTime')
+            if not title or not link:
+                continue
+            items_combined.append({
+                'title': title,
+                'link': link,
+                'publisher': publisher or 'Unknown',
+                'providerPublishTime': pub_date,
+                'ticker': ticker,
+                'source': 'yahoo'
+            })
+    except Exception:
+        pass
+
+    # Source 2: Finnhub company-news
+    api_key = st.secrets.get("FINNHUB_API_KEY") if hasattr(st, "secrets") else None
+    if api_key:
+        try:
+            today = datetime.utcnow().date()
+            start = today - timedelta(days=21)
+            url = "https://finnhub.io/api/v1/company-news"
+            params = {
+                "symbol": ticker,
+                "from": start.isoformat(),
+                "to": today.isoformat(),
+                "token": api_key,
+            }
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                items = resp.json() or []
+                for it in items[:30]:
+                    title = it.get("headline") or it.get("title")
+                    link = it.get("url")
+                    if not title or not link:
+                        continue
+                    pub_ts = it.get("datetime")  # seconds epoch
+                    items_combined.append({
+                        'title': title,
+                        'link': link,
+                        'publisher': it.get("source") or 'Unknown',
+                        'providerPublishTime': pub_ts,
+                        'ticker': ticker,
+                        'source': 'finnhub'
+                    })
+        except Exception:
+            pass
+
+    # Deduplicate by link (primary) then title
+    seen_links = set()
+    seen_titles = set()
+    deduped = []
+    for it in items_combined:
+        link_key = (it.get('link') or '').strip().lower()
+        title_key = (it.get('title') or '').strip().lower()
+        if link_key and link_key in seen_links:
+            continue
+        if not link_key and title_key in seen_titles:
+            continue
+        if link_key:
+            seen_links.add(link_key)
+        if title_key:
+            seen_titles.add(title_key)
+        deduped.append(it)
+
+    # Sort by publish time desc
+    def _ts(item):
+        ts = item.get('providerPublishTime')
+        if isinstance(ts, (int, float)):
+            return ts
+        if isinstance(ts, str):
+            try:
+                # Attempt ISO parse
+                return datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp()
+            except Exception:
+                return 0
+        return 0
+
+    deduped.sort(key=_ts, reverse=True)
+
+    return deduped[:15]
 
 # Main app
 st.title("Earnings & News")
@@ -459,40 +618,45 @@ holdings = portfolio['ticker'].tolist()
 # Earnings Calendar Section
 st.subheader("Upcoming Earnings")
 
-earnings_data = []
+earnings_events = []
+missing_earnings = []
 for ticker in holdings:
-    data = get_earnings_data(ticker)
-    if data and data['earnings_date']:
-        earnings_data.append(data)
+    events = get_earnings_events(ticker)
+    if events:
+        earnings_events.extend(events)
+    else:
+        missing_earnings.append(ticker)
 
-if earnings_data:
-    # Convert to DataFrame and sort by date
-    earnings_df = pd.DataFrame(earnings_data)
+if earnings_events:
+    # Build dataframe of events
+    earnings_df = pd.DataFrame(earnings_events)
     earnings_df['earnings_date'] = pd.to_datetime(earnings_df['earnings_date'])
     earnings_df = earnings_df.sort_values('earnings_date')
-    
     today = datetime.now()
-    
+
     # Split into upcoming and past
     upcoming = earnings_df[earnings_df['earnings_date'] >= today]
     past = earnings_df[earnings_df['earnings_date'] < today]
-    
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.write("**Upcoming Earnings**")
         if not upcoming.empty:
             for _, row in upcoming.iterrows():
                 days_until = (row['earnings_date'] - today).days
                 date_str = row['earnings_date'].strftime('%b %d, %Y')
-                
+
                 if days_until <= 7:
                     urgency = "🔴"
                 elif days_until <= 14:
                     urgency = "🟡"
                 else:
                     urgency = "🟢"
-                
+
+                est = row.get('eps_estimate')
+                eps_line = f"Est. EPS: {est:.2f}" if pd.notna(est) else "Est. EPS: N/A"
+
                 st.markdown(f"""
                 <div class="news-card earnings-upcoming">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -502,18 +666,38 @@ if earnings_data:
                     <div style="color: #8b949e; margin-top: 0.3rem;">
                         {urgency} {days_until} days away
                     </div>
+                    <div style="color: #8b949e; margin-top: 0.3rem;">{eps_line}</div>
                 </div>
                 """, unsafe_allow_html=True)
         else:
             st.info("No upcoming earnings dates found")
-    
+
     with col2:
         st.write("**Recent Earnings**")
         if not past.empty:
+            # Take latest 5 events
             for _, row in past.tail(5).iterrows():
                 days_ago = (today - row['earnings_date']).days
                 date_str = row['earnings_date'].strftime('%b %d, %Y')
-                
+
+                eps_est = row.get('eps_estimate')
+                eps_act = row.get('eps_actual')
+                if pd.notna(eps_act) and pd.notna(eps_est):
+                    diff = eps_act - eps_est
+                    status = "Meet"
+                    if diff > 0.01:
+                        status = "Beat"
+                    elif diff < -0.01:
+                        status = "Miss"
+                    diff_str = f"{diff:+.2f}"
+                    eps_line = f"EPS: {eps_act:.2f} vs {eps_est:.2f} ({status}, {diff_str})"
+                elif pd.notna(eps_act):
+                    eps_line = f"EPS: {eps_act:.2f} (estimate unavailable)"
+                    status = ""
+                else:
+                    eps_line = "EPS data unavailable"
+                    status = ""
+
                 st.markdown(f"""
                 <div class="news-card earnings-past">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -523,12 +707,15 @@ if earnings_data:
                     <div style="color: #8b949e; margin-top: 0.3rem;">
                         {days_ago} days ago
                     </div>
+                    <div style="color: #8b949e; margin-top: 0.3rem;">{eps_line}</div>
                 </div>
                 """, unsafe_allow_html=True)
         else:
             st.info("No recent earnings data")
 else:
     st.info("Unable to fetch earnings data for holdings")
+    if missing_earnings:
+        st.caption("No earnings data available from Yahoo Finance for: " + ", ".join(missing_earnings))
 
 # Section divider
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -571,18 +758,25 @@ if all_news:
         link = item.get('link', '#')
         ticker = item.get('ticker', '')
         
-        # Convert timestamp to readable date
+        # Convert timestamp/ISO to readable relative time
         pub_time = item.get('providerPublishTime', None)
-        if pub_time:
+        pub_date = None
+        if isinstance(pub_time, (int, float)):
             pub_date = datetime.fromtimestamp(pub_time)
-            time_ago = datetime.now() - pub_date
-            
+        elif isinstance(pub_time, str):
+            try:
+                pub_date = datetime.fromisoformat(pub_time.replace('Z', '+00:00'))
+            except Exception:
+                pub_date = None
+
+        if pub_date:
+            time_ago = datetime.now(pub_date.tzinfo) - pub_date
             if time_ago.days > 0:
                 time_str = f"{time_ago.days}d ago"
             elif time_ago.seconds // 3600 > 0:
                 time_str = f"{time_ago.seconds // 3600}h ago"
             else:
-                time_str = f"{time_ago.seconds // 60}m ago"
+                time_str = f"{max(time_ago.seconds // 60,1)}m ago"
         else:
             time_str = ""
         

@@ -63,6 +63,21 @@ def get_ev_ebitda(ticker):
     except:
         return None
 
+# Get P/E ratio metric
+def get_pe_ratio(ticker):
+    try:
+        info = yf.Ticker(ticker).info
+        # First try trailing P/E, fall back to forward P/E
+        pe_ratio = info.get('trailingPE', None)
+        if pe_ratio is not None:
+            return pe_ratio
+        pe_ratio = info.get('forwardPE', None)
+        if pe_ratio is not None:
+            return pe_ratio
+        return None
+    except:
+        return None
+
 # Get historical data
 @st.cache_data(ttl=300)
 def get_historical_data(ticker):
@@ -483,10 +498,6 @@ header_html = f"""
         <div class="nav-logo">
             <span class="nav-logo-text">Portfolio<span class="nav-logo-accent">Tracker</span></span>
         </div>
-        <div class="nav-links">
-            <a href="/" target="_top" class="nav-link active">Dashboard</a>
-            <a href="/Earnings_%26_News" target="_top" class="nav-link">Earnings & News</a>
-        </div>
     </div>
 </div>
 
@@ -510,6 +521,20 @@ header_html = f"""
 </html>
 """
 components.html(header_html, height=100)
+
+# Navigation buttons (3 across: Dashboard, Peer Comparison, Earnings & News)
+col1, col2, col3 = st.columns([1, 3, 1])
+with col2:
+    n1, n2, n3 = st.columns(3)
+    with n1:
+        # current page
+        st.button("Dashboard", use_container_width=True, disabled=True)
+    with n2:
+        if st.button("Peer Comparison", use_container_width=True):
+            st.switch_page("pages/Relative_Valuation.py")
+    with n3:
+        if st.button("Earnings & News", use_container_width=True):
+            st.switch_page("pages/Earnings_&_News.py")
 
 # Custom CSS inspired by professional analytics platforms like Kpler
 st.markdown("""
@@ -671,30 +696,29 @@ st.markdown("""
         color: #79c0ff;
     }
     
-    /* Button styling - Professional Kpler-style */
+    /* Button styling - unified with Earnings & News */
     .stButton > button {
-        background: linear-gradient(135deg, #3080ff 0%, #60a5fa 100%);
-        color: #ffffff;
-        border: none;
+        background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+        color: #e5e7eb;
+        border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 10px;
         font-weight: 700;
-        padding: 1.2rem 3rem;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        box-shadow: 0 8px 24px rgba(48, 128, 255, 0.25);
-        letter-spacing: 0.3px;
+        padding: 1rem 2.4rem;
+        transition: all 0.25s ease;
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+        letter-spacing: 0.2px;
         font-size: 0.95rem;
         width: 100%;
-        margin-top: 3rem;
     }
     
     .stButton > button:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 12px 36px rgba(48, 128, 255, 0.35);
-        background: linear-gradient(135deg, #4890ff 0%, #75b5ff 100%);
+        transform: translateY(-1px);
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+        background: linear-gradient(135deg, #233044 0%, #192030 100%);
     }
     
     .stButton > button:active {
-        transform: translateY(-1px);
+        transform: translateY(0px);
     }
     
     /* Input fields */
@@ -1350,20 +1374,96 @@ if ev_ebitda_data:
         fig_ev_col.update_layout(
             title="Holdings EV/LTM EBITDA",
             yaxis_title="EV/LTM EBITDA",
-            xaxis_title="Ticker",
             height=500,
             showlegend=False
         )
         st.plotly_chart(fig_ev_col)
         
         # Show portfolio average
-        col1, col2 = st.columns(2)
-        col1.metric("Portfolio Avg EV/LTM EBITDA (Weighted)", f"{portfolio_ev_ebitda:.2f}")
-        col2.metric("Holdings Count", len(holdings_sorted))
+        st.metric("Portfolio Avg EV/LTM EBITDA (Weighted)", f"{portfolio_ev_ebitda:.2f}")
     else:
         st.info("Unable to calculate weighted portfolio EV/EBITDA")
 else:
     st.info("EV/EBITDA data not available for any holdings")
+
+# P/E Ratio Comparison
+st.subheader("P/E Ratio Comparison")
+pe_data = []
+
+for ticker in holdings:
+    info = yf.Ticker(ticker).info
+    pe_ratio = None
+    pe_type = None
+    
+    # Check for trailing P/E first
+    pe_ratio = info.get('trailingPE', None)
+    if pe_ratio is not None and pe_ratio > 0:
+        pe_type = 'Trailing'
+    else:
+        # Fall back to forward P/E
+        pe_ratio = info.get('forwardPE', None)
+        if pe_ratio is not None and pe_ratio > 0:
+            pe_type = 'Forward'
+    
+    if pe_ratio is not None:
+        # Get portfolio position value
+        position = portfolio[portfolio['ticker'] == ticker]
+        if not position.empty:
+            current_price = position['current_price'].iloc[0]
+            shares = position['shares'].iloc[0]
+            position_value = current_price * shares
+            pe_data.append({
+                'ticker': ticker,
+                'pe_ratio': pe_ratio,
+                'weight': position_value,
+                'pe_type': pe_type
+            })
+
+if pe_data:
+    # Calculate weighted average P/E
+    total_weight = sum(item['weight'] for item in pe_data)
+    portfolio_pe = sum(item['pe_ratio'] * item['weight'] for item in pe_data) / total_weight if total_weight > 0 else None
+    
+    if portfolio_pe is not None:
+        # Create column chart showing individual holdings
+        holdings_sorted_pe = sorted(pe_data, key=lambda x: x['pe_ratio'], reverse=True)
+        tickers_pe = [item['ticker'] for item in holdings_sorted_pe]
+        pe_values = [item['pe_ratio'] for item in holdings_sorted_pe]
+        colors = ['#764ba2' if item['pe_type'] == 'Trailing' else '#a389d4' for item in holdings_sorted_pe]
+        
+        fig_pe_col = go.Figure(data=[
+            go.Bar(
+                x=tickers_pe,
+                y=pe_values,
+                marker=dict(color=colors),
+                text=[f"{val:.2f}" for val in pe_values],
+                textposition='auto'
+            )
+        ])
+        fig_pe_col.update_layout(
+            title="Holdings P/E Ratio (Trailing or Forward)",
+            yaxis_title="P/E Ratio",
+            height=500,
+            showlegend=False,
+            annotations=[
+                dict(
+                    text="<b>Color Key:</b> Dark purple = Trailing P/E | Light purple = Forward P/E",
+                    xref="paper", yref="paper",
+                    x=0.5, y=-0.15,
+                    showarrow=False,
+                    font=dict(size=11),
+                    xanchor='center'
+                )
+            ]
+        )
+        st.plotly_chart(fig_pe_col)
+        
+        # Show portfolio average
+        st.metric("Portfolio Avg P/E (Weighted)", f"{portfolio_pe:.2f}")
+    else:
+        st.info("Unable to calculate weighted portfolio P/E")
+else:
+    st.info("P/E data not available for any holdings")
 
 # Section divider before settings
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
